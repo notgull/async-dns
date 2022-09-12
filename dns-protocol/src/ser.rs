@@ -33,6 +33,8 @@ pub(crate) trait Serialize<'a> {
 }
 
 /// A cursor into a series of bytes.
+/// 
+/// This keeps track of how many bytes that we have already consumed, while also providing the original buffer.
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Cursor<'a> {
     /// The bytes being read.

@@ -213,15 +213,16 @@ async fn query_question_and_nameserver(
     );
 
     // Serialize it to a buffer.
-    let mut stack_buffer = [0; 1024];
-    let mut heap_buffer = None;
+    let mut stack_buffer = [0; 512];
+    let mut heap_buffer;
     let needed = message.space_needed();
 
     // Use the stack if we can, but switch to the heap if it's not enough.
     let buf = if needed > stack_buffer.len() {
-        heap_buffer.insert(vec![0; needed]).as_mut_slice()
+        heap_buffer = vec![0; needed];
+        heap_buffer.as_mut_slice()
     } else {
-        &mut stack_buffer
+        &mut stack_buffer[..]
     };
 
     let len = message
@@ -261,7 +262,7 @@ async fn question_with_udp(
     let mut addrs = vec![];
 
     // Write the query to the nameserver address.
-    let socket = Async::<UdpSocket>::bind(([127, 0, 0, 1], 0))?;
+    let socket = Async::<UdpSocket>::bind(([0, 0, 0, 0], 0))?;
     let foreign_addr = SocketAddr::new(nameserver, 53);
 
     // UDP queries are limited to 512 bytes.
@@ -365,9 +366,11 @@ async fn question_with_tcp(
 
     // Read the response.
     let mut stack_buffer = [0; 1024];
-    let mut heap_buffer = None;
+    let mut heap_buffer;
     let buf = if len > stack_buffer.len() {
-        heap_buffer.insert(vec![0; len]).as_mut_slice()
+        // Initialize the heap buffer and return a pointer to it.
+        heap_buffer = vec![0; len];
+        heap_buffer.as_mut_slice()
     } else {
         &mut stack_buffer
     };

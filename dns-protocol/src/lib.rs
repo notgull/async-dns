@@ -568,6 +568,13 @@ impl<'arrays, 'innards> Serialize<'innards> for Message<'arrays, 'innards> {
         }
 
         let cursor = self.header.deserialize(cursor)?;
+
+        // If we're truncated, we can't read the rest of the message.
+        if self.header.flags.truncated() {
+            self.header.clear();
+            return Ok(cursor);
+        }
+
         let cursor = try_read_set(
             cursor,
             self.header.question_count as usize,
@@ -618,6 +625,15 @@ serialize! {
 
         /// The number of additional records in this query.
         additional_count: u16,
+    }
+}
+
+impl Header {
+    fn clear(&mut self) {
+        self.question_count = 0;
+        self.answer_count = 0;
+        self.authority_count = 0;
+        self.additional_count = 0;
     }
 }
 

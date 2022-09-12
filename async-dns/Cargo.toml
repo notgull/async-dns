@@ -5,6 +5,8 @@ edition = "2018"
 authors = ["John Nunley <jtnunley01@gmail.com>"]
 description = "A simple async DNS resolver"
 license = "MIT OR Apache-2.0"
+homepage = "https://github.com/notgull/async-dns/tree/master/async-dns#readme"
+repository = "https://github.com/notgull/async-dns/tree/master/async-dns"
 
 [[bench]]
 name = "comparison"
@@ -28,7 +30,7 @@ features = [
 async-executor = "1"
 async-fs = "1"
 async-io = "1"
-dns-protocol = { path = "../dns-protocol" }
+dns-protocol = "0.1"
 fastrand = "1"
 memchr = "2.5.0"
 
@@ -38,3 +40,7 @@ blocking = "1"
 [dev-dependencies]
 blocking = "1"
 criterion = "0.4.0"
+
+[target.'cfg(windows)'.dev-dependencies]
+# we use async-io::block_on in tests
+async-io = "1"

@@ -304,12 +304,26 @@ impl<'a> Serialize<'a> for Label<'a> {
         // Figure out where the end is.
         let mut end = start;
         loop {
-            if original[end] == 0 {
-                end += 1;
-                break;
-            }
+            let len_char = match original.get(end) {
+                Some(0) => {
+                    end += 1;
+                    break;
+                }
+                Some(ptr) if ptr & PTR_MASK != 0 => {
+                    // Pointer goes for one more byte and then ends.
+                    end += 2;
+                    break;
+                }
+                Some(len_char) => *len_char,
+                None => {
+                    return Err(Error::NotEnoughReadBytes {
+                        tried_to_read: NonZeroUsize::new(cursor.cursor + end).unwrap(),
+                        available: original.len(),
+                    })
+                }
+            };
 
-            let len = original[end] as usize;
+            let len = len_char as usize;
             end += len + 1;
         }
 
@@ -350,6 +364,9 @@ fn parse_bytes(bytes: &[u8], position: usize) -> impl Iterator<Item = LabelSegme
 fn parse_string(str: &str) -> impl Iterator<Item = LabelSegment<'_>> + '_ {
     let dot = Memchr::new(b'.', str.as_bytes());
     let mut last_index = 0;
+
+    // Add one extra entry to `dot` that's at the end of the string.
+    let dot = dot.chain(Some(str.len()));
 
     dot.filter_map(move |index| {
         let item = &str[last_index..index];

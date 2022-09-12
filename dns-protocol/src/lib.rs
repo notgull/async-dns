@@ -61,9 +61,9 @@
 //! println!("Answer Data: {:?}", answer.data());
 //! # Ok(())
 //! # }
-//! 
+//!
 //! # Features
-//! 
+//!
 //! - `std` (enabled by default) - Enables the `std` library for use in `Error` types.
 //!   Disable this feature to use on `no_std` targets.
 //! ```
@@ -318,7 +318,7 @@ impl From<InvalidCode> for Error {
 }
 
 /// The message for a DNS query.
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Message<'arrays, 'innards> {
     /// The header of the message.
     header: Header,
@@ -342,6 +342,18 @@ pub struct Message<'arrays, 'innards> {
     ///
     /// **Invariant:** This is always greater than or equal to `header.additional_count`.
     additional: &'arrays mut [ResourceRecord<'innards>],
+}
+
+impl fmt::Debug for Message<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Message")
+            .field("header", &self.header)
+            .field("questions", &self.questions())
+            .field("answers", &self.answers())
+            .field("authorities", &self.authorities())
+            .field("additional", &self.additional())
+            .finish()
+    }
 }
 
 impl<'arrays, 'innards> Message<'arrays, 'innards> {
@@ -610,7 +622,7 @@ serialize! {
 
 serialize! {
     /// The question in a DNS query.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Question<'a> {
         /// The name of the question.
         name: Label<'a>,
@@ -789,6 +801,13 @@ impl Flags {
     /// Create a new, empty set of flags.
     pub const fn new() -> Self {
         Self(0)
+    }
+
+    /// Use the standard set of flags for a DNS query.
+    ///
+    /// This is identical to `new()` but uses recursive querying.
+    pub const fn standard_query() -> Self {
+        Self(0x0100)
     }
 
     /// Get the query/response flag.

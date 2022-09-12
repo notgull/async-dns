@@ -22,8 +22,7 @@ use memchr::memmem;
 
 use std::fmt;
 use std::io;
-use std::net::SocketAddr;
-use std::net::{IpAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
 pub(super) async fn lookup(name: &str) -> io::Result<Vec<AddressInfo>> {
@@ -135,8 +134,8 @@ async fn dns_with_search(mut name: &str, resolv: &ResolvConf) -> io::Result<Vec<
 async fn dns_lookup(name: &str, resolv: &ResolvConf) -> io::Result<Vec<AddressInfo>> {
     // Create the DNS query.
     let questions = [
-        Question::new(name, ResourceType::A, 0),
-        Question::new(name, ResourceType::AAAA, 0),
+        Question::new(name, ResourceType::A, 1),
+        Question::new(name, ResourceType::AAAA, 1),
     ];
 
     match resolv.name_servers.len() {
@@ -152,7 +151,7 @@ async fn dns_lookup(name: &str, resolv: &ResolvConf) -> io::Result<Vec<AddressIn
         _ => {
             // Use an executor to poll futures in parallel.
             let executor = Executor::new();
-            let mut tasks = vec![];
+            let mut tasks = Vec::with_capacity(resolv.name_servers.len());
 
             for ns in resolv.name_servers.iter().copied() {
                 tasks.push(
@@ -196,7 +195,7 @@ async fn query_nameserver(
     let id = fastrand::u16(..);
     let message = Message::new(
         id,
-        Flags::default(),
+        Flags::standard_query(),
         &mut questions,
         &mut [],
         &mut [],
@@ -246,20 +245,29 @@ async fn query_nameserver(
         let len = match result {
             WaitResult::Packet { len } => len,
             WaitResult::TimedOut => {
-                // Try again.
+                // Try again. Use yield_now() to give other tasks time if we're in an executor.
+                future::yield_now().await;
                 continue;
             }
         };
 
         // Parse the packet.
+        let mut questions = [Question::default(); 2];
         let mut answers = [ResourceRecord::default(); MAX_ANSWERS];
-        let message = Message::read(&buf[..len], &mut [], &mut answers, &mut [], &mut [])
+        let message = Message::read(&buf[..len], &mut questions, &mut answers, &mut [], &mut [])
             .map_err(|err| io::Error::new(io::ErrorKind::Other, ErrWrap(err)))?;
 
         // Check the ID.
         if message.id() != id {
             // Try again.
+            future::yield_now().await;
             continue;
+        }
+
+        // If the reply was truncated, return an error.
+        // TODO(notgull): If the packet was truncated, try again with TCP.
+        if message.flags().truncated() {
+            return Err(io::Error::new(io::ErrorKind::Other, "packet was truncated"));
         }
 
         // Parse the resulting answer.
@@ -285,6 +293,9 @@ async fn query_nameserver(
                 _ => None,
             }
         }));
+
+        // We got a response, so we're done.
+        break;
     }
 
     Ok(addrs)
@@ -329,6 +340,7 @@ impl ResolvConf {
 
         loop {
             // Read a line.
+            buf.clear();
             let n = file.read_line(&mut buf).await?;
 
             // If we read nothing, we reached the end of the file.

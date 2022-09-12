@@ -23,8 +23,9 @@ cfg_if::cfg_if! {
         mod windows;
         use windows as sys;
     } else {
-        mod fallback;
-        use fallback as sys;
+        compile_error! {
+            "async-dns does not support this platform"
+        }
     }
 }
 

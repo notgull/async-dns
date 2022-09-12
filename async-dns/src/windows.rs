@@ -1,22 +1,26 @@
 //! Windows strategy, using the DNS API.
 
 use super::AddressInfo;
+use futures_lite::future;
 use windows_sys::Win32::Foundation as found;
 use windows_sys::Win32::NetworkManagement::Dns as dns;
 
 use std::ffi::c_void;
 use std::io;
 use std::mem;
+use std::net::{IpAddr, Ipv6Addr};
 use std::process::abort;
 
 pub(super) async fn lookup(name: &str) -> io::Result<Vec<AddressInfo>> {
-    // First, try IPv4 addresses.
-    let mut ipv4 = dns_query(name, dns::DNS_TYPE_A).await?;
+    // Query IPv4 and IPv6 addresses at once.
+    let (mut ipv4, mut ipv6) = future::try_zip(
+        dns_query(name, dns::DNS_TYPE_A as _),
+        dns_query(name, dns::DNS_TYPE_AAAA as _),
+    )
+    .await?;
 
-    // If we didn't get any IPv4 addresses, try IPv6 addresses.
-    if ipv4.is_empty() {
-        ipv4 = dns_query(name, dns::DNS_TYPE_AAAA).await?;
-    }
+    // Append them together.
+    ipv4.append(&mut ipv6);
 
     Ok(ipv4)
 }
@@ -46,10 +50,10 @@ async fn dns_query(name: &str, query_type: u16) -> io::Result<Vec<AddressInfo>> 
     let (send, recv) = async_channel::bounded(1);
 
     // Make the actual DNS query.
-    let handle = make_query(name, query_type, move |result, _| {
+    let handle = make_query(name, query_type, move |result| {
         // Parse the results.
         let result = unsafe { &mut *result };
-        let mut current = result.pQueryResults;
+        let mut current = result.pQueryRecords;
 
         if !current.is_null() {
             let mut addrs = Vec::new();
@@ -58,7 +62,7 @@ async fn dns_query(name: &str, query_type: u16) -> io::Result<Vec<AddressInfo>> 
                 // Parse the current record.
                 let record = unsafe { &mut *current };
 
-                match record.wType {
+                match record.wType as u32 {
                     dns::DNS_TYPE_A => {
                         // It's an IPv4 Address
                         let ip_addr = unsafe { record.Data.A.IpAddress };
@@ -108,7 +112,7 @@ async fn dns_query(name: &str, query_type: u16) -> io::Result<Vec<AddressInfo>> 
 
             // Free the results.
             unsafe {
-                dns::DnsRecordListFree(result.pQueryResults, dns::DNS_FREE_RECORDS_LIST);
+                dns::DnsFree(result.pQueryRecords as *const _, dns::DnsFreeRecordList);
             }
 
             // Send the results.
@@ -139,7 +143,7 @@ fn make_query<F>(
     complete: F,
 ) -> io::Result<Option<dns::DNS_QUERY_CANCEL>>
 where
-    F: FnOnce(*mut dns::DNS_QUERY_RESULT, bool),
+    F: FnOnce(*mut dns::DNS_QUERY_RESULT),
 {
     // Win32 callback function for the completion.
     unsafe extern "system" fn dns_completion_callback<F>(
@@ -151,7 +155,7 @@ where
         // "closure" is a `Box<F>` in reality.
         let _guard = NoPanic;
         let closure = Box::from_raw(closure as *mut F);
-        (closure)(results, true);
+        (closure)(results);
         mem::forget(_guard);
     }
 
@@ -165,12 +169,12 @@ where
     // Create the initial request.
     let request = dns::DNS_QUERY_REQUEST {
         Version: dns::DNS_QUERY_REQUEST_VERSION1,
-        Name: name.as_ptr(),
+        QueryName: name.as_ptr(),
         QueryType: query_type,
         QueryOptions: 0,
         pDnsServerList: std::ptr::null_mut(),
         pQueryCompletionCallback: Some(dns_completion_callback::<F>),
-        pQueryContext: Box::into_raw(complete) as *const c_void,
+        pQueryContext: Box::into_raw(complete) as *mut c_void,
         InterfaceIndex: 0,
     };
 
@@ -187,13 +191,15 @@ where
         )
     };
 
+    const ERROR_SUCCESS: i32 = found::ERROR_SUCCESS as i32;
+
     // Determine what the result is.
     match res {
-        found::ERROR_SUCCESS => {
+        ERROR_SUCCESS => {
             // The query was successful and it completed immediately.
             // Get the closure back and run it.
             let closure = unsafe { Box::from_raw(request.pQueryContext as *mut F) };
-            (closure)(immediate_results.as_mut_ptr(), false);
+            (closure)(immediate_results.as_mut_ptr());
             Ok(None)
         }
         found::DNS_REQUEST_PENDING => {

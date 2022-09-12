@@ -7,12 +7,10 @@
 //!   files, [`async-io`] for communication with the server, and [`dns-protocol`] for the
 //!   protocol implementation.
 //! - On `cfg(windows)`, it uses the [`DnsQueryEx`] function to make asynchronous queries.
-//! - On other systems, it uses [`unblock`] to run blocking DNS lookups on a thread pool.
 //!
 //! [`DnsQueryEx`]: https://docs.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnsqueryex
 //! [`async-fs`]: https://crates.io/crates/async-fs
 //! [`async-io`]: https://crates.io/crates/async-io
-//! [`unblock`]: https://crates.io/crates/blocking
 //! [`dns-protocol`]: https://crates.io/crates/dns-protocol
 
 cfg_if::cfg_if! {

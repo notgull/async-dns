@@ -20,9 +20,10 @@ use dns_protocol::{Flags, Message, Question, ResourceRecord, ResourceType};
 use futures_lite::{future, io::BufReader, prelude::*};
 use memchr::memmem;
 
+use std::cmp;
 use std::fmt;
 use std::io;
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::time::Duration;
 
 pub(super) async fn lookup(name: &str) -> io::Result<Vec<AddressInfo>> {
@@ -31,10 +32,8 @@ pub(super) async fn lookup(name: &str) -> io::Result<Vec<AddressInfo>> {
         return Ok(vec![addr]);
     }
 
-    // Open a DNS socket and load the config.
-    let resolv = ResolvConf::load().await?;
-
     // Otherwise, we need to use the manual resolver.
+    let resolv = ResolvConf::load().await?;
     dns_with_search(name, &resolv).await
 }
 
@@ -120,7 +119,9 @@ async fn dns_with_search(mut name: &str, resolv: &ResolvConf) -> io::Result<Vec<
                 buffer.push_str(domain);
 
                 if let Ok(addrs) = dns_lookup(&buffer, resolv).await {
-                    return Ok(addrs);
+                    if !addrs.is_empty() {
+                        return Ok(addrs);
+                    }
                 }
             }
         }
@@ -130,14 +131,8 @@ async fn dns_with_search(mut name: &str, resolv: &ResolvConf) -> io::Result<Vec<
     dns_lookup(name, resolv).await
 }
 
-/// Preform a manual lookup.
+/// Preform a manual lookup for the name.
 async fn dns_lookup(name: &str, resolv: &ResolvConf) -> io::Result<Vec<AddressInfo>> {
-    // Create the DNS query.
-    let questions = [
-        Question::new(name, ResourceType::A, 1),
-        Question::new(name, ResourceType::AAAA, 1),
-    ];
-
     match resolv.name_servers.len() {
         0 => {
             // No nameservers, so we can't do anything.
@@ -146,7 +141,7 @@ async fn dns_lookup(name: &str, resolv: &ResolvConf) -> io::Result<Vec<AddressIn
         1 => {
             // Just poll the one nameserver.
             let addr = resolv.name_servers[0];
-            query_nameserver(questions, addr, resolv).await
+            query_name_and_nameserver(name, addr, resolv).await
         }
         _ => {
             // Use an executor to poll futures in parallel.
@@ -155,7 +150,8 @@ async fn dns_lookup(name: &str, resolv: &ResolvConf) -> io::Result<Vec<AddressIn
 
             for ns in resolv.name_servers.iter().copied() {
                 tasks.push(
-                    executor.spawn(async move { query_nameserver(questions, ns, resolv).await }),
+                    executor
+                        .spawn(async move { query_name_and_nameserver(name, ns, resolv).await }),
                 );
             }
 
@@ -173,26 +169,40 @@ async fn dns_lookup(name: &str, resolv: &ResolvConf) -> io::Result<Vec<AddressIn
     }
 }
 
-/// Poll for a DNS response on the given nameserver.
-async fn query_nameserver(
-    mut questions: [Question<'_>; 2],
+/// Poll for the name on the given nameserver.
+async fn query_name_and_nameserver(
+    name: &str,
     nameserver: IpAddr,
     resolv: &ResolvConf,
 ) -> io::Result<Vec<AddressInfo>> {
-    const MAX_ANSWERS: usize = 16;
+    // Try to poll for an IPv4 address first.
+    let mut addrs =
+        query_question_and_nameserver(Question::new(name, ResourceType::A, 1), nameserver, resolv)
+            .await?;
 
-    /// The result of waiting for a packet on a fixed timeout.
-    enum WaitResult {
-        /// The packet was received.
-        Packet { len: usize },
-        /// The timeout expired.
-        TimedOut,
+    // If we didn't get any addresses, try an IPv6 address.
+    if addrs.is_empty() {
+        addrs = query_question_and_nameserver(
+            Question::new(name, ResourceType::AAAA, 1),
+            nameserver,
+            resolv,
+        )
+        .await?;
     }
 
-    let mut addrs = vec![];
+    Ok(addrs)
+}
 
+/// Poll for a DNS response on the given nameserver.
+async fn query_question_and_nameserver(
+    question: Question<'_>,
+    nameserver: IpAddr,
+    resolv: &ResolvConf,
+) -> io::Result<Vec<AddressInfo>> {
     // Create the DNS query.
+    // I'd like to use two questions at once, but at least the DNS system I use just drops the packet.
     let id = fastrand::u16(..);
+    let mut questions = [question];
     let message = Message::new(
         id,
         Flags::standard_query(),
@@ -203,7 +213,7 @@ async fn query_nameserver(
     );
 
     // Serialize it to a buffer.
-    let mut stack_buffer = [0; 512];
+    let mut stack_buffer = [0; 1024];
     let mut heap_buffer = None;
     let needed = message.space_needed();
 
@@ -218,12 +228,47 @@ async fn query_nameserver(
         .write(buf)
         .map_err(|err| io::Error::new(io::ErrorKind::Other, ErrWrap(err)))?;
 
+    // The query may be too large, so we need to use TCP.
+    if len <= 512 {
+        if let Some(addrs) = question_with_udp(id, &buf[..len], nameserver, resolv).await? {
+            return Ok(addrs);
+        }
+    }
+
+    // We were unable to complete the query over UDP, use TCP instead.
+    question_with_tcp(id, &buf[..len], nameserver).await
+}
+
+/// Query a nameserver for the given question, using the UDP protocol.
+///
+/// Returns `None` if the UDP query failed and TCP should be used instead.
+async fn question_with_udp(
+    id: u16,
+    query: &[u8],
+    nameserver: IpAddr,
+    resolv: &ResolvConf,
+) -> io::Result<Option<Vec<AddressInfo>>> {
+    const RECORD_BUFSIZE: usize = 16;
+
+    /// The result of waiting for a packet on a fixed timeout.
+    enum WaitResult {
+        /// The packet was received.
+        Packet { len: usize },
+        /// The timeout expired.
+        TimedOut,
+    }
+
+    let mut addrs = vec![];
+
     // Write the query to the nameserver address.
     let socket = Async::<UdpSocket>::bind(([127, 0, 0, 1], 0))?;
     let foreign_addr = SocketAddr::new(nameserver, 53);
 
+    // UDP queries are limited to 512 bytes.
+    let mut buf = [0; 512];
+
     for _ in 0..resolv.attempts {
-        socket.send_to(&buf[..len], foreign_addr).await?;
+        socket.send_to(query, foreign_addr).await?;
 
         // Wait for `timeout` seconds for a response.
         let timeout = Timer::after(Duration::from_secs(resolv.timeout.into()));
@@ -231,15 +276,12 @@ async fn query_nameserver(
             timeout.await;
             io::Result::Ok(WaitResult::TimedOut)
         };
+        let read_packet = async {
+            let len = socket.recv(&mut buf).await?;
+            io::Result::Ok(WaitResult::Packet { len })
+        };
 
-        let result = future::or(
-            async {
-                let len = socket.recv(buf).await?;
-                Ok(WaitResult::Packet { len })
-            },
-            timeout,
-        )
-        .await?;
+        let result = future::or(read_packet, timeout).await?;
 
         // Get the length of the packet we're reading.
         let len = match result {
@@ -251,11 +293,21 @@ async fn query_nameserver(
             }
         };
 
+        // Buffers for DNS results.
+        let mut q_buf = [Question::default(); 1];
+        let mut answers = [ResourceRecord::default(); RECORD_BUFSIZE];
+        let mut authority = [ResourceRecord::default(); RECORD_BUFSIZE];
+        let mut additional = [ResourceRecord::default(); RECORD_BUFSIZE];
+
         // Parse the packet.
-        let mut questions = [Question::default(); 2];
-        let mut answers = [ResourceRecord::default(); MAX_ANSWERS];
-        let message = Message::read(&buf[..len], &mut questions, &mut answers, &mut [], &mut [])
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, ErrWrap(err)))?;
+        let message = Message::read(
+            &buf[..len],
+            &mut q_buf,
+            &mut answers,
+            &mut authority,
+            &mut additional,
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, ErrWrap(err)))?;
 
         // Check the ID.
         if message.id() != id {
@@ -264,41 +316,116 @@ async fn query_nameserver(
             continue;
         }
 
-        // If the reply was truncated, return an error.
-        // TODO(notgull): If the packet was truncated, try again with TCP.
+        // If the reply was truncated, it's too large for UDP.
         if message.flags().truncated() {
-            return Err(io::Error::new(io::ErrorKind::Other, "packet was truncated"));
+            return Ok(None);
         }
 
         // Parse the resulting answer.
-        addrs.extend(message.answers().iter().filter_map(|answer| {
-            let data = answer.data();
-
-            // Parse the data as an IP address.
-            match data.len() {
-                4 => {
-                    let mut bytes = [0; 4];
-                    bytes.copy_from_slice(data);
-                    Some(AddressInfo {
-                        ip_address: IpAddr::V4(bytes.into()),
-                    })
-                }
-                16 => {
-                    let mut bytes = [0; 16];
-                    bytes.copy_from_slice(data);
-                    Some(AddressInfo {
-                        ip_address: IpAddr::V6(bytes.into()),
-                    })
-                }
-                _ => None,
-            }
-        }));
+        parse_answers(&message, &mut addrs);
 
         // We got a response, so we're done.
-        break;
+        return Ok(Some(addrs));
     }
 
+    // We did not receive a response.
+    Ok(None)
+}
+
+/// Query a nameserver for the given question, using the TCP protocol.
+#[cold]
+async fn question_with_tcp(
+    id: u16,
+    query: &[u8],
+    nameserver: IpAddr,
+) -> io::Result<Vec<AddressInfo>> {
+    const RECORD_BUFSIZE: usize = 16;
+
+    if query.len() > u16::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "query too large for TCP",
+        ));
+    }
+
+    // Open the socket to the server.
+    let mut socket = Async::<TcpStream>::connect((nameserver, 53)).await?;
+
+    // Write the length of the query.
+    let len_bytes = (query.len() as u16).to_be_bytes();
+    socket.write_all(&len_bytes).await?;
+
+    // Write the query.
+    socket.write_all(query).await?;
+
+    // Read the length of the response.
+    let mut len_bytes = [0; 2];
+    socket.read_exact(&mut len_bytes).await?;
+    let len = u16::from_be_bytes(len_bytes) as usize;
+
+    // Read the response.
+    let mut stack_buffer = [0; 1024];
+    let mut heap_buffer = None;
+    let buf = if len > stack_buffer.len() {
+        heap_buffer.insert(vec![0; len]).as_mut_slice()
+    } else {
+        &mut stack_buffer
+    };
+
+    socket.read_exact(buf).await?;
+
+    // Parse the response.
+    let mut q_buf = [Question::default(); 1];
+    let mut answers = [ResourceRecord::default(); RECORD_BUFSIZE];
+    let mut authority = [ResourceRecord::default(); RECORD_BUFSIZE];
+    let mut additional = [ResourceRecord::default(); RECORD_BUFSIZE];
+
+    let message = Message::read(
+        &buf[..len],
+        &mut q_buf,
+        &mut answers,
+        &mut authority,
+        &mut additional,
+    )
+    .map_err(|err| io::Error::new(io::ErrorKind::Other, ErrWrap(err)))?;
+
+    if message.id() != id {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "invalid ID in response",
+        ));
+    }
+
+    // Parse the answers as address info.
+    let mut addrs = vec![];
+    parse_answers(&message, &mut addrs);
     Ok(addrs)
+}
+
+/// Append address information to the vector, given the DNS response.
+fn parse_answers(response: &Message<'_, '_>, addrs: &mut Vec<AddressInfo>) {
+    addrs.extend(response.answers().iter().filter_map(|answer| {
+        let data = answer.data();
+
+        // Parse the data as an IP address.
+        match data.len() {
+            4 => {
+                let mut bytes = [0; 4];
+                bytes.copy_from_slice(data);
+                Some(AddressInfo {
+                    ip_address: IpAddr::V4(bytes.into()),
+                })
+            }
+            16 => {
+                let mut bytes = [0; 16];
+                bytes.copy_from_slice(data);
+                Some(AddressInfo {
+                    ip_address: IpAddr::V6(bytes.into()),
+                })
+            }
+            _ => None,
+        }
+    }));
 }
 
 /// Structural form of `resolv.conf`.
@@ -356,6 +483,9 @@ impl ResolvConf {
             // If there is a comment, remove it.
             if let Some(n) = memchr::memchr(b'#', buf.as_bytes()) {
                 buf.truncate(n);
+                if buf.is_empty() {
+                    continue;
+                }
             }
 
             if let Some(ns) = buf.strip_prefix("nameserver") {
@@ -370,14 +500,14 @@ impl ResolvConf {
                 if let Some(ndots_index) = memmem::find(options.as_bytes(), b"ndots:") {
                     // Parse the number of dots.
                     if let Ok(ndots) = options[ndots_index + 6..].trim().parse() {
-                        config.ndots = ndots;
+                        config.ndots = cmp::min(ndots, 15);
                     }
 
                     continue;
                 } else if let Some(timeout_index) = memmem::find(options.as_bytes(), b"timeout:") {
                     // Parse the timeout.
                     if let Ok(timeout) = options[timeout_index + 8..].trim().parse() {
-                        config.timeout = timeout;
+                        config.timeout = cmp::min(timeout, 60);
                     }
 
                     continue;
@@ -385,7 +515,7 @@ impl ResolvConf {
                 {
                     // Parse the number of attempts.
                     if let Ok(attempts) = options[attempts_index + 9..].trim().parse() {
-                        config.attempts = attempts;
+                        config.attempts = cmp::min(attempts, 10);
                     }
 
                     continue;

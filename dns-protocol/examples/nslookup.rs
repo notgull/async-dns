@@ -50,6 +50,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    println!("Nameserver: {}", nameserver);
+
     // Create the message we need to send.
     let mut questions = [Question::new(name.as_str(), ResourceType::A, 1)];
     let message = Message::new(
@@ -60,8 +62,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut [],
         &mut [],
     );
-
-    println!("{:#?}", &message);
 
     // Allocate the buffer that we need to send.
     let mut buffer = vec![0; message.space_needed()];
@@ -80,16 +80,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Parse the response.
     let mut answers = [ResourceRecord::default(); 16];
+    let mut authority = [ResourceRecord::default(); 16];
+    let mut additional = [ResourceRecord::default(); 16];
     let message = Message::read(
         &buffer[..len],
         &mut questions,
         &mut answers,
-        &mut [],
-        &mut [],
+        &mut authority,
+        &mut additional,
     )?;
 
     println!(";; Got answer: {:?}", message.flags().response_code());
-    println!("{:#?}", &message);
 
     // Print the answers.
     for answer in message.answers() {

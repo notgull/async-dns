@@ -577,19 +577,19 @@ impl<'arrays, 'innards> Serialize<'innards> for Message<'arrays, 'innards> {
             cursor,
             self.header.answer_count as usize,
             self.answers,
-            "ResourceRecord",
+            "Answer",
         )?;
         let cursor = try_read_set(
             cursor,
             self.header.authority_count as usize,
             self.authorities,
-            "ResourceRecord",
+            "Authority",
         )?;
         let cursor = try_read_set(
             cursor,
             self.header.additional_count as usize,
             self.additional,
-            "ResourceRecord",
+            "Additional",
         )?;
 
         Ok(cursor)

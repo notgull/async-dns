@@ -61,6 +61,7 @@
 //! println!("Answer Data: {:?}", answer.data());
 //! # Ok(())
 //! # }
+//! ```
 //!
 //! # Features
 //!

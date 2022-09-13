@@ -13,6 +13,10 @@
 //! [`async-io`]: https://crates.io/crates/async-io
 //! [`dns-protocol`]: https://crates.io/crates/dns-protocol
 
+// Non-windows platforms use no unsafe code.
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![forbid(missing_docs, future_incompatible)]
+
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod unix;

@@ -1,7 +1,6 @@
 //! Windows strategy, using the DNS API.
 
 use super::AddressInfo;
-use futures_lite::future;
 use windows_sys::Win32::Foundation as found;
 use windows_sys::Win32::NetworkManagement::Dns as dns;
 
@@ -12,17 +11,15 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::process::abort;
 
 pub(super) async fn lookup(name: &str) -> io::Result<Vec<AddressInfo>> {
-    // Query IPv4 and IPv6 addresses at once.
-    let (mut ipv4, mut ipv6) = future::try_zip(
-        dns_query(name, dns::DNS_TYPE_A as _),
-        dns_query(name, dns::DNS_TYPE_AAAA as _),
-    )
-    .await?;
+    // Query IPv4 addresses.
+    let mut addrs = dns_query(name, dns::DNS_TYPE_A as _).await?;
 
-    // Append them together.
-    ipv4.append(&mut ipv6);
+    // If there are no IPv4 addreses, query IPv6 addresses.
+    if addrs.is_empty() {
+        addrs = dns_query(name, dns::DNS_TYPE_AAAA as _).await?;
+    }
 
-    Ok(ipv4)
+    Ok(addrs)
 }
 
 /// Preform a DNS query for the given DNS type.
@@ -171,7 +168,7 @@ where
         Version: dns::DNS_QUERY_REQUEST_VERSION1,
         QueryName: name.as_ptr(),
         QueryType: query_type,
-        QueryOptions: 0,
+        QueryOptions: dns::DNS_QUERY_STANDARD as _,
         pDnsServerList: std::ptr::null_mut(),
         pQueryCompletionCallback: Some(dns_completion_callback::<F>),
         pQueryContext: Box::into_raw(complete) as *mut c_void,
@@ -209,7 +206,17 @@ where
         err => {
             // The request failed. The closure will not be called, so dealloc it.
             drop(unsafe { Box::from_raw(request.pQueryContext as *mut F) });
-            Err(io::Error::from_raw_os_error(err))
+
+            // This may be a DNS error.
+            if matches!(err, 0x2329..=0x26B2) {
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("DNS error: {}", err - 0x2328),
+                ))
+            } else {
+                // Otherwise, it's a Win32 error.
+                Err(io::Error::from_raw_os_error(err))
+            }
         }
     }
 }

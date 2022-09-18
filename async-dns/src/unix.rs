@@ -21,10 +21,18 @@ use futures_lite::{future, io::BufReader, prelude::*};
 use memchr::memmem;
 
 use std::cmp;
+use std::convert::TryInto;
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
+use std::sync::Arc;
 use std::time::Duration;
+
+/// An executor used to spawn tasks for simultaneous DNS lookups.
+///
+/// This is unlikely to ever be initialized, since it is only used when we
+/// have more than one nameserver at a time to deal with.
+static EXECUTOR: Executor<'static> = Executor::new();
 
 pub(super) async fn lookup(name: &str) -> io::Result<Vec<AddressInfo>> {
     // We may be able to use the /etc/hosts resolver.
@@ -90,7 +98,7 @@ async fn from_hosts(name: &str) -> io::Result<Option<AddressInfo>> {
 /// Preform a DNS lookup, considering the search variable.
 async fn dns_with_search(mut name: &str, resolv: &ResolvConf) -> io::Result<Vec<AddressInfo>> {
     // See if we should just use global scope.
-    let num_dots = memchr::memchr_iter(b'.', name.as_bytes()).count();
+    let num_dots = memchr::Memchr::new(b'.', name.as_bytes()).count();
     let global_scope = num_dots >= resolv.ndots as usize || name.ends_with('.');
 
     // Remove the dots from the end of `name`, if needed.
@@ -145,18 +153,22 @@ async fn dns_lookup(name: &str, resolv: &ResolvConf) -> io::Result<Vec<AddressIn
         }
         _ => {
             // Use an executor to poll futures in parallel.
-            let executor = Executor::new();
             let mut tasks = Vec::with_capacity(resolv.name_servers.len());
+            let name = Arc::<str>::from(name.to_string().into_boxed_str());
+            let resolv = Arc::new(resolv.clone());
 
             for ns in resolv.name_servers.iter().copied() {
+                let name = name.clone();
+                let resolv = resolv.clone();
+
                 tasks.push(
-                    executor
-                        .spawn(async move { query_name_and_nameserver(name, ns, resolv).await }),
+                    EXECUTOR
+                        .spawn(async move { query_name_and_nameserver(&name, ns, &resolv).await }),
                 );
             }
 
             // Poll until every task is complete.
-            executor
+            EXECUTOR
                 .run(async move {
                     let mut info = Vec::with_capacity(tasks.len());
                     for task in tasks {
@@ -413,17 +425,15 @@ fn parse_answers(response: &Message<'_, '_>, addrs: &mut Vec<AddressInfo>) {
         // Parse the data as an IP address.
         match data.len() {
             4 => {
-                let mut bytes = [0; 4];
-                bytes.copy_from_slice(data);
+                let data: [u8; 4] = data.try_into().unwrap();
                 Some(AddressInfo {
-                    ip_address: IpAddr::V4(bytes.into()),
+                    ip_address: IpAddr::V4(data.into()),
                 })
             }
             16 => {
-                let mut bytes = [0; 16];
-                bytes.copy_from_slice(data);
+                let data: [u8; 16] = data.try_into().unwrap();
                 Some(AddressInfo {
-                    ip_address: IpAddr::V6(bytes.into()),
+                    ip_address: IpAddr::V6(data.into()),
                 })
             }
             _ => None,
@@ -432,6 +442,7 @@ fn parse_answers(response: &Message<'_, '_>, addrs: &mut Vec<AddressInfo>) {
 }
 
 /// Structural form of `resolv.conf`.
+#[derive(Clone)]
 struct ResolvConf {
     /// The list of name servers.
     name_servers: Vec<IpAddr>,

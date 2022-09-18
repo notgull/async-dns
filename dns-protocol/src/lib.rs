@@ -514,10 +514,10 @@ impl<'arrays, 'innards> Message<'arrays, 'innards> {
 impl<'arrays, 'innards> Serialize<'innards> for Message<'arrays, 'innards> {
     fn serialized_len(&self) -> usize {
         iter::once(self.header.serialized_len())
-            .chain(self.questions.iter().map(Serialize::serialized_len))
-            .chain(self.answers.iter().map(Serialize::serialized_len))
-            .chain(self.authorities.iter().map(Serialize::serialized_len))
-            .chain(self.additional.iter().map(Serialize::serialized_len))
+            .chain(self.questions().iter().map(Serialize::serialized_len))
+            .chain(self.answers().iter().map(Serialize::serialized_len))
+            .chain(self.authorities().iter().map(Serialize::serialized_len))
+            .chain(self.additional().iter().map(Serialize::serialized_len))
             .fold(0, |a, b| a.saturating_add(b))
     }
 

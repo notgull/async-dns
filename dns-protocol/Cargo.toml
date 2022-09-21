@@ -1,6 +1,6 @@
 [package]
 name = "dns-protocol"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2018"
 authors = ["John Nunley <jtnunley01@gmail.com>"]
 description = "A DNS protocol implementation in Rust"

@@ -6,7 +6,8 @@ authors = ["John Nunley <jtnunley01@gmail.com>"]
 description = "A DNS protocol implementation in Rust"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/notgull/async-dns/tree/master/dns-protocol#readme"
-repository = "https://github.com/notgull/async-dns/tree/master/dns-protocol"
+repository = "https://github.com/notgull/async-dns"
+rust-version = "1.41"
 
 [dependencies]
 memchr = { version = "2.5.0", default-features = false }

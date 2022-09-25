@@ -91,12 +91,16 @@ jobs:
       matrix:
         # When updating this, the reminder to update the minimum supported
         # Rust version in Cargo.toml and .clippy.toml.
-        rust: ['1.47']
+        ad_rust: ['1.47']
+        dp_rust: ['1.41']
     steps:
       - uses: actions/checkout@v3
-      - name: Install Rust
-        run: rustup update ${{ matrix.rust }} && rustup default ${{ matrix.rust }}
+      - name: Install Rust for async-dns
+        run: rustup update ${{ matrix.ad_rust }} && rustup default ${{ matrix.ad_rust }}
       - run: cargo build
+      - name: Install Rust for dns-protocol
+        run: rustup update ${{ matrix.dp_rust }} && rustup default ${{ matrix.dp_rust }}
+      - run: cargo build -p dns-protocol
 
   clippy:
     runs-on: ubuntu-latest

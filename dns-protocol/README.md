@@ -8,6 +8,12 @@ In addition, this crate is not only `no_std`, but also `alloc`-free. This means 
 
 However, there is a catch. Since this system does not allocate, the user is responsible for providing a buffer to parse DNS messages into. This means that the user must know the maximum size of a DNS message that they will be parsing. This is a reasonable assumption, since DNS messages are limited to 512 bytes in the common case.
 
+[sans-I/O]: https://sans-io.readthedocs.io/en/latest/
+
+## MSRV
+
+The Minimum Supported Rust Version (MSRV) for this crate is Rust 1.41. Any change to this MSRV will be accompanied by a minor version bump.
+
 ## License
 
 Dual licensed under the MIT and Apache 2.0 licenses.

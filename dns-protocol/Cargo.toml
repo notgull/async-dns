@@ -1,6 +1,6 @@
 [package]
 name = "dns-protocol"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2018"
 authors = ["John Nunley <jtnunley01@gmail.com>"]
 description = "A DNS protocol implementation in Rust"
@@ -10,7 +10,7 @@ repository = "https://github.com/notgull/async-dns"
 rust-version = "1.41"
 
 [dependencies]
-memchr = { version = "2.5.0", default-features = false }
+memchr = { version = "2.7", default-features = false }
 
 [features]
 default = ["std"]

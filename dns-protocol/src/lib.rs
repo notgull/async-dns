@@ -770,7 +770,7 @@ impl<'a> Serialize<'a> for ResourceData<'a> {
         bytes[1] = b2;
 
         // Write the data
-        bytes[2..len - 2].copy_from_slice(self.0);
+        bytes[2..len].copy_from_slice(self.0);
 
         Ok(len)
     }
@@ -1384,3 +1384,19 @@ impl fmt::Display for InvalidCode {
 
 #[cfg(feature = "std")]
 impl StdError for InvalidCode {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_data_serialization() {
+        let mut buf = [0u8; 7];
+        let record = ResourceData(&[0x1f, 0xfe, 0x02, 0x24, 0x75]);
+        let len = record
+            .serialize(&mut buf)
+            .expect("serialized into provided buffer");
+        assert_eq!(len, 7);
+        assert_eq!(buf, [0x00, 0x05, 0x1f, 0xfe, 0x02, 0x24, 0x75]);
+    }
+}

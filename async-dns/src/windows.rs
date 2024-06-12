@@ -12,11 +12,11 @@ use std::process::abort;
 
 pub(super) async fn lookup(name: &str) -> io::Result<Vec<AddressInfo>> {
     // Query IPv4 addresses.
-    let mut addrs = dns_query(name, dns::DNS_TYPE_A as _).await?;
+    let mut addrs = dns_query(name, dns::DNS_TYPE_A).await?;
 
     // If there are no IPv4 addreses, query IPv6 addresses.
     if addrs.is_empty() {
-        addrs = dns_query(name, dns::DNS_TYPE_AAAA as _).await?;
+        addrs = dns_query(name, dns::DNS_TYPE_AAAA).await?;
     }
 
     Ok(addrs)
@@ -59,7 +59,7 @@ async fn dns_query(name: &str, query_type: u16) -> io::Result<Vec<AddressInfo>> 
                 // Parse the current record.
                 let record = unsafe { &mut *current };
 
-                match record.wType as u32 {
+                match record.wType {
                     dns::DNS_TYPE_A => {
                         // It's an IPv4 Address
                         let ip_addr = unsafe { record.Data.A.IpAddress };
@@ -168,7 +168,7 @@ where
         Version: dns::DNS_QUERY_REQUEST_VERSION1,
         QueryName: name.as_ptr(),
         QueryType: query_type,
-        QueryOptions: dns::DNS_QUERY_STANDARD as _,
+        QueryOptions: 0,
         pDnsServerList: std::ptr::null_mut(),
         pQueryCompletionCallback: Some(dns_completion_callback::<F>),
         pQueryContext: Box::into_raw(complete) as *mut c_void,

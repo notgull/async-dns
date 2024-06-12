@@ -172,7 +172,7 @@ where
         pQueryCompletionCallback: Some(dns_completion_callback::<F>),
         pQueryContext: Box::into_raw(complete) as *mut c_void,
         InterfaceIndex: 0,
-        pDnsServerList: std::ptr::null_mut()
+        pDnsServerList: std::ptr::null_mut(),
     };
 
     // Create space for the results.
@@ -184,15 +184,9 @@ where
 
     // The first field of immediate_results must be version 1.
 
-
     // Call the function proper.
-    let res = unsafe {
-        dns::DnsQueryEx(
-            &request,
-            &mut immediate_results,
-            cancel_handle.as_mut_ptr(),
-        )
-    };
+    let res =
+        unsafe { dns::DnsQueryEx(&request, &mut immediate_results, cancel_handle.as_mut_ptr()) };
 
     const ERROR_SUCCESS: i32 = found::ERROR_SUCCESS as i32;
 

@@ -2,7 +2,7 @@
 name = "async-dns"
 version = "0.1.0"
 edition = "2018"
-authors = ["John Nunley <jtnunley01@gmail.com>"]
+authors = ["John Nunley <dev@notgull.net>"]
 description = "A simple async DNS resolver"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/notgull/async-dns/tree/master/async-dns#readme"

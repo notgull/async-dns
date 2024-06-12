@@ -175,8 +175,8 @@ where
     };
 
     // Create space for the results.
-    let mut immediate_results = mem::MaybeUninit::<dns::DNS_QUERY_RESULT>::uninit();
-    let mut cancel_handle = mem::MaybeUninit::<dns::DNS_QUERY_CANCEL>::uninit();
+    let mut immediate_results = mem::MaybeUninit::<dns::DNS_QUERY_RESULT>::zeroed();
+    let mut cancel_handle = mem::MaybeUninit::<dns::DNS_QUERY_CANCEL>::zeroed();
 
     // Call the function proper.
     let res = unsafe {

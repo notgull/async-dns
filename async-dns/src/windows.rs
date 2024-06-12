@@ -165,14 +165,13 @@ where
 
     // Create the initial request.
     let request = dns::DNS_QUERY_REQUEST {
-        Version: dns::DNS_QUERY_REQUEST_VERSION1,
+        Version: 1,
         QueryName: name.as_ptr(),
         QueryType: query_type,
         QueryOptions: 0,
-        pDnsServerList: std::ptr::null_mut(),
         pQueryCompletionCallback: Some(dns_completion_callback::<F>),
         pQueryContext: Box::into_raw(complete) as *mut c_void,
-        InterfaceIndex: 0,
+        ..unsafe { mem::zeroed() }
     };
 
     // Create space for the results.
@@ -206,6 +205,8 @@ where
         err => {
             // The request failed. The closure will not be called, so dealloc it.
             drop(unsafe { Box::from_raw(request.pQueryContext as *mut F) });
+
+            println!("got error code: {err:}");
 
             // This may be a DNS error.
             if matches!(err, 0x2329..=0x26B2) {

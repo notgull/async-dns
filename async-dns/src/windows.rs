@@ -165,24 +165,31 @@ where
 
     // Create the initial request.
     let request = dns::DNS_QUERY_REQUEST {
-        Version: 1,
+        Version: dns::DNS_QUERY_REQUEST_VERSION1,
         QueryName: name.as_ptr(),
         QueryType: query_type,
         QueryOptions: 0,
         pQueryCompletionCallback: Some(dns_completion_callback::<F>),
         pQueryContext: Box::into_raw(complete) as *mut c_void,
-        ..unsafe { mem::zeroed() }
+        InterfaceIndex: 0,
+        pDnsServerList: std::ptr::null_mut()
     };
 
     // Create space for the results.
-    let mut immediate_results = mem::MaybeUninit::<dns::DNS_QUERY_RESULT>::zeroed();
-    let mut cancel_handle = mem::MaybeUninit::<dns::DNS_QUERY_CANCEL>::zeroed();
+    let mut immediate_results = dns::DNS_QUERY_RESULT {
+        Version: dns::DNS_QUERY_REQUEST_VERSION1,
+        ..unsafe { mem::zeroed() }
+    };
+    let mut cancel_handle = mem::MaybeUninit::<dns::DNS_QUERY_CANCEL>::uninit();
+
+    // The first field of immediate_results must be version 1.
+
 
     // Call the function proper.
     let res = unsafe {
         dns::DnsQueryEx(
             &request,
-            immediate_results.as_mut_ptr(),
+            &mut immediate_results,
             cancel_handle.as_mut_ptr(),
         )
     };
@@ -195,7 +202,7 @@ where
             // The query was successful and it completed immediately.
             // Get the closure back and run it.
             let closure = unsafe { Box::from_raw(request.pQueryContext as *mut F) };
-            (closure)(immediate_results.as_mut_ptr());
+            (closure)(&mut immediate_results);
             Ok(None)
         }
         found::DNS_REQUEST_PENDING => {

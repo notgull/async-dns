@@ -7,7 +7,7 @@ description = "A simple async DNS resolver"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/notgull/async-dns/tree/master/async-dns#readme"
 repository = "https://github.com/notgull/async-dns/tree/master/async-dns"
-rust-version = "1.47"
+rust-version = "1.63"
 keywords = ["dns", "async"]
 categories = ["network-programming", "asynchronous"]
 

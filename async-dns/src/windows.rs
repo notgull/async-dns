@@ -45,80 +45,85 @@ async fn dns_query(name: &str, query_type: u16) -> io::Result<Vec<AddressInfo>> 
 
     // Create a channel to receive the results.
     let (send, recv) = async_channel::bounded(1);
+    let mut query_results = QueryResultsSlot(mem::MaybeUninit::uninit());
 
     // Make the actual DNS query.
-    let handle = make_query(name, query_type, move |result| {
-        // Parse the results.
-        let result = unsafe { &mut *result };
-        let mut current = result.pQueryRecords;
+    let handle = make_query(
+        name,
+        query_type,
+        &mut query_results.0,
+        move |result: &mut dns::DNS_QUERY_RESULT| {
+            // Parse the results.
+            let mut current = result.pQueryRecords;
 
-        if !current.is_null() {
-            let mut addrs = Vec::new();
+            if !current.is_null() {
+                let mut addrs = Vec::new();
 
-            loop {
-                // Parse the current record.
-                let record = unsafe { &mut *current };
+                loop {
+                    // Parse the current record.
+                    let record = unsafe { &mut *current };
 
-                match record.wType {
-                    dns::DNS_TYPE_A => {
-                        // It's an IPv4 Address
-                        let ip_addr = unsafe { record.Data.A.IpAddress };
+                    match record.wType {
+                        dns::DNS_TYPE_A => {
+                            // It's an IPv4 Address
+                            let ip_addr = unsafe { record.Data.A.IpAddress };
 
-                        let addr_info = AddressInfo {
-                            ip_address: IpAddr::V4(ip_addr.to_be_bytes().into()),
-                        };
+                            let addr_info = AddressInfo {
+                                ip_address: IpAddr::V4(ip_addr.to_be_bytes().into()),
+                            };
 
-                        addrs.push(addr_info);
+                            addrs.push(addr_info);
+                        }
+                        dns::DNS_TYPE_AAAA => {
+                            // It's an IPv6 Address
+                            let ip_addr = unsafe { record.Data.AAAA.Ip6Address.IP6Qword };
+
+                            let left = ip_addr[0].to_be_bytes();
+                            let right = ip_addr[1].to_be_bytes();
+
+                            let ip_addr = Ipv6Addr::new(
+                                u16::from_be_bytes([left[0], left[1]]),
+                                u16::from_be_bytes([left[2], left[3]]),
+                                u16::from_be_bytes([left[4], left[5]]),
+                                u16::from_be_bytes([left[6], left[7]]),
+                                u16::from_be_bytes([right[0], right[1]]),
+                                u16::from_be_bytes([right[2], right[3]]),
+                                u16::from_be_bytes([right[4], right[5]]),
+                                u16::from_be_bytes([right[6], right[7]]),
+                            );
+
+                            let addr_info = AddressInfo {
+                                ip_address: IpAddr::V6(ip_addr),
+                            };
+
+                            addrs.push(addr_info);
+                        }
+                        _ => {
+                            // Not our concern, ignore it.
+                        }
                     }
-                    dns::DNS_TYPE_AAAA => {
-                        // It's an IPv6 Address
-                        let ip_addr = unsafe { record.Data.AAAA.Ip6Address.IP6Qword };
 
-                        let left = ip_addr[0].to_be_bytes();
-                        let right = ip_addr[1].to_be_bytes();
-
-                        let ip_addr = Ipv6Addr::new(
-                            u16::from_be_bytes([left[0], left[1]]),
-                            u16::from_be_bytes([left[2], left[3]]),
-                            u16::from_be_bytes([left[4], left[5]]),
-                            u16::from_be_bytes([left[6], left[7]]),
-                            u16::from_be_bytes([right[0], right[1]]),
-                            u16::from_be_bytes([right[2], right[3]]),
-                            u16::from_be_bytes([right[4], right[5]]),
-                            u16::from_be_bytes([right[6], right[7]]),
-                        );
-
-                        let addr_info = AddressInfo {
-                            ip_address: IpAddr::V6(ip_addr),
-                        };
-
-                        addrs.push(addr_info);
-                    }
-                    _ => {
-                        // Not our concern, ignore it.
+                    // Move to the next record.
+                    if record.pNext.is_null() {
+                        break;
+                    } else {
+                        current = record.pNext;
                     }
                 }
 
-                // Move to the next record.
-                if record.pNext.is_null() {
-                    break;
-                } else {
-                    current = record.pNext;
+                // Free the results.
+                unsafe {
+                    dns::DnsFree(result.pQueryRecords as *const _, dns::DnsFreeRecordList);
                 }
-            }
 
-            // Free the results.
-            unsafe {
-                dns::DnsFree(result.pQueryRecords as *const _, dns::DnsFreeRecordList);
+                // Send the results.
+                let _ = send.try_send(Ok(addrs));
+            } else {
+                // No available records.
+                let _ = send.try_send(Ok(vec![]));
             }
-
-            // Send the results.
-            let _ = send.try_send(Ok(addrs));
-        } else {
-            // No available records.
-            let _ = send.try_send(Ok(vec![]));
-        }
-    })?;
+        },
+    )?;
     let mut guard = CancelDns(handle);
 
     // Wait for the request to complete.
@@ -137,22 +142,23 @@ async fn dns_query(name: &str, query_type: u16) -> io::Result<Vec<AddressInfo>> 
 fn make_query<F>(
     name: &str,
     query_type: u16,
+    immediate_results: &mut mem::MaybeUninit<dns::DNS_QUERY_RESULT>,
     complete: F,
 ) -> io::Result<Option<dns::DNS_QUERY_CANCEL>>
 where
-    F: FnOnce(*mut dns::DNS_QUERY_RESULT),
+    F: FnOnce(&mut dns::DNS_QUERY_RESULT),
 {
     // Win32 callback function for the completion.
     unsafe extern "system" fn dns_completion_callback<F>(
         closure: *const c_void,
         results: *mut dns::DNS_QUERY_RESULT,
     ) where
-        F: FnOnce(*mut dns::DNS_QUERY_RESULT),
+        F: FnOnce(&mut dns::DNS_QUERY_RESULT),
     {
         // "closure" is a `Box<F>` in reality.
         let _guard = NoPanic;
         let closure = Box::from_raw(closure as *mut F);
-        (closure)(results);
+        (closure)(&mut *results);
         mem::forget(_guard);
     }
 
@@ -176,17 +182,22 @@ where
     };
 
     // Create space for the results.
-    let mut immediate_results = dns::DNS_QUERY_RESULT {
+    immediate_results.write(dns::DNS_QUERY_RESULT {
         Version: dns::DNS_QUERY_REQUEST_VERSION1,
         ..unsafe { mem::zeroed() }
-    };
+    });
     let mut cancel_handle = mem::MaybeUninit::<dns::DNS_QUERY_CANCEL>::uninit();
 
     // The first field of immediate_results must be version 1.
 
     // Call the function proper.
-    let res =
-        unsafe { dns::DnsQueryEx(&request, &mut immediate_results, cancel_handle.as_mut_ptr()) };
+    let res = unsafe {
+        dns::DnsQueryEx(
+            &request,
+            immediate_results.as_mut_ptr(),
+            cancel_handle.as_mut_ptr(),
+        )
+    };
 
     const ERROR_SUCCESS: i32 = found::ERROR_SUCCESS as i32;
 
@@ -196,7 +207,7 @@ where
             // The query was successful and it completed immediately.
             // Get the closure back and run it.
             let closure = unsafe { Box::from_raw(request.pQueryContext as *mut F) };
-            (closure)(&mut immediate_results);
+            (closure)(unsafe { immediate_results.assume_init_mut() });
             Ok(None)
         }
         found::DNS_REQUEST_PENDING => {
@@ -231,3 +242,8 @@ impl Drop for NoPanic {
         abort();
     }
 }
+
+struct QueryResultsSlot(mem::MaybeUninit<dns::DNS_QUERY_RESULT>);
+
+unsafe impl Send for QueryResultsSlot {}
+unsafe impl Sync for QueryResultsSlot {}

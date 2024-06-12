@@ -355,9 +355,11 @@ fn parse_bytes(bytes: &[u8], position: usize) -> impl Iterator<Item = LabelSegme
         cursor = segment.deserialize(cursor).ok()?;
 
         match segment {
-            LabelSegment::String(_) => {},
-            _ => { keep_going = false; }
-        } 
+            LabelSegment::String(_) => {}
+            _ => {
+                keep_going = false;
+            }
+        }
 
         Some(segment)
     })

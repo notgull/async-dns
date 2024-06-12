@@ -12,7 +12,7 @@ However, there is a catch. Since this system does not allocate, the user is resp
 
 ## MSRV
 
-The Minimum Supported Rust Version (MSRV) for this crate is Rust 1.41. Any change to this MSRV will be accompanied by a minor version bump.
+The Minimum Supported Rust Version (MSRV) for this crate is Rust 1.63. Any change to this MSRV will be accompanied by a minor version bump.
 
 ## License
 
